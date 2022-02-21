@@ -19,6 +19,6 @@ public class InterruptTest2 {
             e.printStackTrace();
         }
         System.out.println(thread.isAlive());
-        System.out.println(thread.getState());Z
+        System.out.println(thread.getState());
     }
 }

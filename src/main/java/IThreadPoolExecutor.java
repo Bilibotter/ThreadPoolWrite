@@ -10,6 +10,7 @@ public class IThreadPoolExecutor implements Executor {
     private static final int STOP       =  1 << COUNT_BITS;
     private static final int TIDYING    =  2 << COUNT_BITS;
     private static final int TERMINATED =  3 << COUNT_BITS;
+    private static final int UNEXIST =  4 << COUNT_BITS;
     private static final int CAPACITY   = (1 << COUNT_BITS) - 1;
     private final AtomicInteger ctl = new AtomicInteger(RUNNING);
 
@@ -71,12 +72,13 @@ public class IThreadPoolExecutor implements Executor {
         if (!isRunning(c)) {
             reject(command);
         }
-        // 添加任务时是仍是running，因此必须执行该任务才能shutdown(shutdownNow无影响)
-        // 获取锁来阻止shutdown
+        // 区别于juc对running的判断
+        // 如果添加任务时仍是running，则会执行该任务而不是拒绝(shutdownNow不会执行)
         boolean addSuc = false;
+        // 获取锁来阻止shutdown
         mainLock.lock();
         try {
-            // recheck在以下情景会误删任务
+            // recheck在以下情景会拒绝任务
             // || isRunning || execute(command) || wQ.offer(command) || shutdown || removeWorker(commandAddInRunning)
             if (workerCountOf(c) < corePoolSize && addWorker(command, true)) {
                 return;
@@ -90,7 +92,26 @@ public class IThreadPoolExecutor implements Executor {
         }
     }
 
-    private boolean addWorker(Runnable firstTask, boolean core) {}
+    private boolean addWorker(Runnable firstTask, boolean core) {
+        int prev = UNEXIST;
+        int accept = core ? corePoolSize : maximumPoolSize;
+        for (;;) {
+            int c = ctl.get();
+            int rs = runStateOf(c);
+            // 原本的判断也太啰嗦了
+            if (rs != prev && rs >= STOP || (rs == SHUTDOWN && workQueue.isEmpty())) {
+                return false;
+            }
+            int wc = workerCountOf(c);
+            if (wc >= CAPACITY || wc >= accept) {
+                return false;
+            }
+            if (ctl.compareAndSet(c, c+1)) {
+                break;
+            }
+            prev = rs;
+        }
+    }
 
 
 
