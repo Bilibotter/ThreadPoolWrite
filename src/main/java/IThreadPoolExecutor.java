@@ -1,6 +1,10 @@
-import java.security.AccessController;
+import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.HashCodeBuilder;
+
+import java.util.HashSet;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.AbstractQueuedSynchronizer;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class IThreadPoolExecutor implements Executor {
@@ -26,6 +30,8 @@ public class IThreadPoolExecutor implements Executor {
 
     private final ReentrantLock mainLock = new ReentrantLock();
 
+    private final HashSet<Worker> workers = new HashSet<Worker>();
+
     /** 与高3位并 */
     private static int runStateOf(int ctl)                  {return ctl & ~CAPACITY;}
     /** 与低28位并 */
@@ -38,6 +44,78 @@ public class IThreadPoolExecutor implements Executor {
     }
 
     final void reject(Runnable command) {}
+
+    private final class Worker extends AbstractQueuedSynchronizer implements Runnable {
+
+        final Thread thread;
+
+        volatile long completedTask;
+
+        Runnable firstTask;
+
+        public Worker(Runnable firstTask) {
+            setState(-1);
+            this.firstTask = firstTask;
+            this.thread = getThreadFactory().newThread(this);
+        }
+
+        @Override
+        public void run() {
+
+        }
+
+        @Override
+        protected boolean isHeldExclusively() {
+            return getState() != 0;
+        }
+
+        @Override
+        protected boolean tryAcquire(int unused) {
+            if (compareAndSetState(0, 1)) {
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        protected boolean tryRelease(int unused) {
+            setExclusiveOwnerThread(null);
+            setState(0);
+            return true;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+
+            if (o == null || getClass() != o.getClass()) return false;
+
+            Worker worker = (Worker) o;
+
+            return new EqualsBuilder().append(thread, worker.thread).isEquals();
+        }
+
+        @Override
+        public int hashCode() {
+            return new HashCodeBuilder(17, 37).append(thread).toHashCode();
+        }
+
+        public void lock()        { acquire(1); }
+        public boolean tryLock()  { return tryAcquire(1); }
+        public void unlock()      { release(1); }
+        public boolean isLocked() { return isHeldExclusively(); }
+
+        void interruptIfStarted() {
+            Thread t;
+            if (getState() >= 0 && (t = thread) != null && !t.isInterrupted()) {
+                try {
+                    t.interrupt();
+                } catch (SecurityException ignore) {
+                }
+            }
+        }
+    }
 
     public IThreadPoolExecutor(int corePoolSize,
                                int maximumPoolSize,
@@ -98,7 +176,7 @@ public class IThreadPoolExecutor implements Executor {
         for (;;) {
             int c = ctl.get();
             int rs = runStateOf(c);
-            // 原本的判断也太啰嗦了
+            // JUC的判断也太啰嗦了
             if (rs != prev && rs >= STOP || (rs == SHUTDOWN && workQueue.isEmpty())) {
                 return false;
             }
@@ -111,9 +189,59 @@ public class IThreadPoolExecutor implements Executor {
             }
             prev = rs;
         }
+        boolean started = false;
+        boolean added = false;
+        Worker w = null;
+        final Thread t;
+        mainLock.lock();
+        try {
+            w = new Worker(firstTask);
+            t = w.thread;
+            if (t == null) {
+                throw new NullPointerException("ThreadPool factory provided thread is null.");
+            }
+            int c = ctl.get();
+            if (isRunning(c) || (runStateOf(c) == SHUTDOWN && firstTask == null)) {
+                if (t.isAlive()) {
+                    throw new IllegalStateException("Attempt to restart a thread which has started!");
+                }
+                workers.add(w);
+                added = true;
+            }
+        } finally {
+            mainLock.unlock();
+        }
+        try {
+            if (!added) {
+                t.start();
+                started = true;
+            }
+        } finally {
+            if (!started) {
+                addWorkerFailed(w);
+            }
+        }
+        return added;
     }
 
+    private void addWorkerFailed(Worker worker) {
+        mainLock.lock();
+        try {
+            workers.remove(worker);
+            decrementWorkerCount();
+        } finally {
+            mainLock.unlock();
+        }
+    }
 
+    private void decrementWorkerCount() {
+        for (;;) {
+            int curr = ctl.get();
+            if (ctl.compareAndSet(curr, curr-1)) {
+                break;
+            }
+        }
+    }
 
     public int getCorePoolSize() {
         return corePoolSize;
@@ -129,5 +257,13 @@ public class IThreadPoolExecutor implements Executor {
 
     public void setMaximumPoolSize(int maximumPoolSize) {
         this.maximumPoolSize = maximumPoolSize;
+    }
+
+    public ThreadFactory getThreadFactory() {
+        return threadFactory;
+    }
+
+    public void setThreadFactory(ThreadFactory threadFactory) {
+        this.threadFactory = threadFactory;
     }
 }
