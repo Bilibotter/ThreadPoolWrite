@@ -9,20 +9,22 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class IThreadPoolExecutor implements Executor {
     private static final int COUNT_BITS = Integer.SIZE - 3;
-    private static final int RUNNING = -1 << COUNT_BITS;
+    private static final int RUNNING    = -1 << COUNT_BITS;
     private static final int SHUTDOWN   =  0 << COUNT_BITS;
     private static final int STOP       =  1 << COUNT_BITS;
     private static final int TIDYING    =  2 << COUNT_BITS;
     private static final int TERMINATED =  3 << COUNT_BITS;
-    private static final int UNEXIST =  4 << COUNT_BITS;
-    private static final int CAPACITY   = (1 << COUNT_BITS) - 1;
-    private final AtomicInteger ctl = new AtomicInteger(RUNNING);
+    private static final int NOT_EXIST  =  4 << COUNT_BITS;
+    private static final int CAPACITY   =  (1 << COUNT_BITS) - 1;
+    private final AtomicInteger ctl     = new AtomicInteger(RUNNING);
 
     private volatile int corePoolSize;
 
     private volatile int maximumPoolSize;
 
     private volatile long keepAliveTime;
+
+    private volatile boolean allowCoreThreadTimeOut = false;
 
     private final BlockingQueue<Runnable> workQueue;
 
@@ -171,13 +173,15 @@ public class IThreadPoolExecutor implements Executor {
     }
 
     private boolean addWorker(Runnable firstTask, boolean core) {
-        int prev = UNEXIST;
+        int prev = NOT_EXIST;
         int accept = core ? corePoolSize : maximumPoolSize;
         for (;;) {
             int c = ctl.get();
             int rs = runStateOf(c);
-            // JUC的判断也太啰嗦了
-            if (rs != prev && rs >= STOP || (rs == SHUTDOWN && workQueue.isEmpty())) {
+            if (rs != prev && (rs >= SHUTDOWN &&!
+                    // 运作状态为SHUTDOWN只在以下情况可以添加成功
+                    // 任务为null且阻塞队列还有未执行完的任务
+                    (rs == SHUTDOWN && firstTask == null && !workQueue.isEmpty()) )) {
                 return false;
             }
             int wc = workerCountOf(c);
@@ -189,9 +193,7 @@ public class IThreadPoolExecutor implements Executor {
             }
             prev = rs;
         }
-        boolean started = false;
-        boolean added = false;
-        Worker w = null;
+        Worker w;
         final Thread t;
         mainLock.lock();
         try {
@@ -200,28 +202,25 @@ public class IThreadPoolExecutor implements Executor {
             if (t == null) {
                 throw new NullPointerException("ThreadPool factory provided thread is null.");
             }
-            int c = ctl.get();
-            if (isRunning(c) || (runStateOf(c) == SHUTDOWN && firstTask == null)) {
-                if (t.isAlive()) {
-                    throw new IllegalStateException("Attempt to restart a thread which has started!");
-                }
-                workers.add(w);
-                added = true;
+            // 区别于JUC
+            // 任务是否可添加取决execute提交那一刻的状态，因此不做recheck
+            if (t.isAlive()) {
+                throw new IllegalStateException("Attempt to restart a thread which has started!");
             }
+            workers.add(w);
         } finally {
             mainLock.unlock();
         }
+        boolean workerStarted = false;
         try {
-            if (!added) {
-                t.start();
-                started = true;
-            }
+            t.start();
+            workerStarted = true;
         } finally {
-            if (!started) {
+            if (!workerStarted) {
                 addWorkerFailed(w);
             }
         }
-        return added;
+        return true;
     }
 
     private void addWorkerFailed(Worker worker) {
@@ -232,6 +231,41 @@ public class IThreadPoolExecutor implements Executor {
         } finally {
             mainLock.unlock();
         }
+    }
+
+    private Runnable getTask() {
+        boolean timeout = false;
+        boolean timed;
+        for (;;) {
+            int c = ctl.get();
+            int rs = runStateOf(c);
+
+            if (rs >= STOP || (rs == SHUTDOWN && workQueue.isEmpty())) {
+                decrementWorkerCount();
+                return null;
+            }
+
+            if (allowCoreThreadTimeOut == true || workerCountOf(c) >= corePoolSize) {
+
+            }
+
+            try {
+                Runnable task = workerCountOf(c) >= corePoolSize ?
+                        workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) : workQueue.take();
+                timeout = true;
+            } catch (InterruptedException e) {
+                timeout = false;
+            }
+        }
+    }
+
+    final void runWorker(Worker w) {
+        Thread wt = Thread.currentThread();
+        Runnable task = w.firstTask;
+        // 将Worker的state变量由-1变成0以启动
+        w.unlock();
+        boolean completedAbruptly = true;
+
     }
 
     private void decrementWorkerCount() {
@@ -265,5 +299,13 @@ public class IThreadPoolExecutor implements Executor {
 
     public void setThreadFactory(ThreadFactory threadFactory) {
         this.threadFactory = threadFactory;
+    }
+
+    public boolean isAllowCoreThreadTimeOut() {
+        return allowCoreThreadTimeOut;
+    }
+
+    public void setAllowCoreThreadTimeOut(boolean allowCoreThreadTimeOut) {
+        this.allowCoreThreadTimeOut = allowCoreThreadTimeOut;
     }
 }
