@@ -1,5 +1,6 @@
 import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.HashCodeBuilder;
+import test.IBlockingQueue;
 
 import java.util.HashSet;
 import java.util.concurrent.*;
@@ -26,7 +27,7 @@ public class IThreadPoolExecutor implements Executor {
 
     private volatile boolean allowCoreThreadTimeOut = false;
 
-    private final BlockingQueue<Runnable> workQueue;
+    private final IBlockingQueue<Runnable> workQueue;
 
     private volatile ThreadFactory threadFactory;
 
@@ -43,6 +44,10 @@ public class IThreadPoolExecutor implements Executor {
 
     private static boolean isRunning(int c) {
         return c < SHUTDOWN;
+    }
+
+    private boolean compareAndDecrementWorkerCount(int expect) {
+        return ctl.compareAndSet(expect, expect - 1);
     }
 
     final void reject(Runnable command) {}
@@ -123,7 +128,7 @@ public class IThreadPoolExecutor implements Executor {
                                int maximumPoolSize,
                                long keepAliveTime,
                                TimeUnit unit,
-                               BlockingQueue<Runnable> workQueue,
+                               IBlockingQueue<Runnable> workQueue,
                                ThreadFactory threadFactory,
                                RejectedExecutionHandler handler) {
         if (corePoolSize < 0 ||
@@ -245,13 +250,22 @@ public class IThreadPoolExecutor implements Executor {
                 return null;
             }
 
-            if (allowCoreThreadTimeOut == true || workerCountOf(c) >= corePoolSize) {
+            int wc = workerCountOf(c);
 
+            timed = allowCoreThreadTimeOut || wc >= corePoolSize;
+
+            if (wc > maximumPoolSize || (timed && timeout && workQueue.isEmpty())) {
+                if (compareAndDecrementWorkerCount(c))
+                    return null;
+                continue;
             }
 
             try {
                 Runnable task = workerCountOf(c) >= corePoolSize ?
                         workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) : workQueue.take();
+                if (task != null) {
+                    return task;
+                }
                 timeout = true;
             } catch (InterruptedException e) {
                 timeout = false;
@@ -265,6 +279,26 @@ public class IThreadPoolExecutor implements Executor {
         // 将Worker的state变量由-1变成0以启动
         w.unlock();
         boolean completedAbruptly = true;
+
+        try {
+            while (task != null || (task = getTask()) != null) {
+                // 不允许shutdown中断线程池
+                w.lock();
+                try {
+                    task.run();
+                } finally {
+                    w.unlock();
+                    w.completedTask++;
+                }
+            }
+            completedAbruptly = false;
+        } finally {
+
+        }
+
+    }
+
+    private void processWorkerExit(Worker w, boolean completedAbruptly) {
 
     }
 
