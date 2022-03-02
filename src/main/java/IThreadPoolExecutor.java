@@ -240,7 +240,6 @@ public class IThreadPoolExecutor implements Executor {
 
     private Runnable getTask() {
         boolean timeout = false;
-        boolean timed;
         for (;;) {
             int c = ctl.get();
             int rs = runStateOf(c);
@@ -252,9 +251,9 @@ public class IThreadPoolExecutor implements Executor {
 
             int wc = workerCountOf(c);
 
-            timed = allowCoreThreadTimeOut || wc >= corePoolSize;
+            timeout = allowCoreThreadTimeOut && timeout;
 
-            if (wc > maximumPoolSize || (timed && timeout && workQueue.isEmpty())) {
+            if (wc > maximumPoolSize || workQueue.isBusy() || timeout) {
                 if (compareAndDecrementWorkerCount(c))
                     return null;
                 continue;
@@ -293,12 +292,45 @@ public class IThreadPoolExecutor implements Executor {
             }
             completedAbruptly = false;
         } finally {
-
+            processWorkerExit(w, completedAbruptly);
         }
 
     }
 
     private void processWorkerExit(Worker w, boolean completedAbruptly) {
+        if (completedAbruptly) {
+            decrementWorkerCount();
+        }
+        mainLock.lock();
+        try {
+            workers.remove(w);
+        } finally {
+            mainLock.unlock();
+        }
+
+        tryTerminate();
+
+        int c = ctl.get();
+        // 1. 处理核心超时控制模式及扩容模式的线程销毁
+        // 2. 处理shutdown及running的异常退出
+        if (c < STOP) {
+            if (!completedAbruptly) {
+                int min = allowCoreThreadTimeOut ? 0 : corePoolSize;
+                // 也许核心线程获取任务超时但workQueue仍有任务
+                if (min == 0 && !workQueue.isEmpty()) {
+                    min = 1;
+                }
+                if (workerCountOf(c) >= min) {
+                    return;
+                }
+            }
+            // 如果是扩容模式异常退出core=true则会无法恢复到扩容模式
+            // addWorker并不会使worker数量超过maximum
+            addWorker(null, false);
+        }
+    }
+
+    final void tryTerminate() {
 
     }
 
