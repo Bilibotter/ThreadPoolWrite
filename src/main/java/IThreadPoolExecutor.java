@@ -331,7 +331,36 @@ public class IThreadPoolExecutor implements Executor {
     }
 
     final void tryTerminate() {
+        for (;;) {
+            int c = ctl.get();
+            if (isRunning(c) || c >= TIDYING || (runStateOf(c) == SHUTDOWN && !workQueue.isEmpty())) {
+                return;
+            }
+            if (workerCountOf(c) != 0) {
+                interruptIdleWorkers(true);
+                return;
+            }
+        }
+    }
 
+    private void interruptIdleWorkers(boolean onlyOne) {
+        mainLock.lock();
+        try {
+            for (Worker worker : workers) {
+                Thread t = worker.thread;
+                if (!t.isInterrupted() && worker.tryLock()) {
+                    t.interrupt();
+                }
+                // 关于onlyOne
+                // 1.interrupt:使在getTask这一步骤阻塞的僵尸线程被唤醒，线程被唤醒后会转而尝试唤醒其他的一个阻塞线程并结束本线程
+                // 2.do nothing:只要work里面仍有运行的线程，则可以由运行线程来代替本线程去中断被阻塞的线程
+                if (onlyOne) {
+                    break;
+                }
+            }
+        } finally {
+            mainLock.unlock();
+        }
     }
 
     private void decrementWorkerCount() {
