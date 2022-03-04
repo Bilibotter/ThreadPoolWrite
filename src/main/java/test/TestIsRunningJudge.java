@@ -1,6 +1,9 @@
 package test;
 
-import java.util.concurrent.LinkedBlockingQueue;
+import util.MyQueue;
+import util.MyRunnable;
+import util.OnlySleep;
+
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 

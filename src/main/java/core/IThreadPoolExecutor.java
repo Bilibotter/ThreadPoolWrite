@@ -1,6 +1,8 @@
+package core;
+
 import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.HashCodeBuilder;
-import test.IBlockingQueue;
+import core.IBlockingQueue;
 
 import java.util.HashSet;
 import java.util.List;

@@ -1,4 +1,6 @@
-package test;
+package util;
+
+import core.IBlockingQueue;
 
 import java.util.Collection;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -27,6 +29,14 @@ public class TouchFishDelayQueue<E> extends LinkedBlockingQueue<E> implements IB
 
     public void setThreshold(double threshold) {
         this.threshold = threshold;
+    }
+
+    @Override
+    public boolean offer(E e) {
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException ignored) {}
+        return super.offer(e);
     }
 
     @Override

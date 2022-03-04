@@ -1,5 +1,8 @@
-import test.Hint;
-import test.TouchFishDelayQueue;
+package test;
+
+import core.IThreadPoolExecutor;
+import util.Hint;
+import util.TouchFishDelayQueue;
 
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -11,7 +14,14 @@ public class TestAdvance {
             executor1.execute(new Hint());
         }
         executor1.shutdown();
-        Thread.sleep(15000);
+        Thread.sleep(8000);
         System.out.println("Finish executor1");
+        ThreadPoolExecutor executor2 = new ThreadPoolExecutor(4, 16,  3, TimeUnit.SECONDS, new TouchFishDelayQueue<>(10));
+        for (int _ = 0; _ < 10; _++) {
+            executor2.execute(new Hint());
+        }
+        executor2.shutdown();
+        Thread.sleep(8000);
+        System.out.println("Finish executor2");
     }
 }
