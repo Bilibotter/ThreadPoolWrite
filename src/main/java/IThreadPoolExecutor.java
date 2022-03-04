@@ -3,9 +3,11 @@ import org.apache.maven.surefire.shade.org.apache.commons.lang3.builder.HashCode
 import test.IBlockingQueue;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.AbstractQueuedSynchronizer;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class IThreadPoolExecutor implements Executor {
@@ -35,6 +37,8 @@ public class IThreadPoolExecutor implements Executor {
 
     private final HashSet<Worker> workers = new HashSet<Worker>();
 
+    private final Condition termination = mainLock.newCondition();
+
     /** 与高3位并 */
     private static int runStateOf(int ctl)                  {return ctl & ~CAPACITY;}
     /** 与低28位并 */
@@ -50,13 +54,13 @@ public class IThreadPoolExecutor implements Executor {
         return ctl.compareAndSet(expect, expect - 1);
     }
 
-    final void reject(Runnable command) {}
+    final void reject(Runnable command) {
+        throw new RejectedExecutionException("Reject command!");
+    }
 
     private final class Worker extends AbstractQueuedSynchronizer implements Runnable {
 
         final Thread thread;
-
-        volatile long completedTask;
 
         Runnable firstTask;
 
@@ -68,7 +72,7 @@ public class IThreadPoolExecutor implements Executor {
 
         @Override
         public void run() {
-
+            runWorker(this);
         }
 
         @Override
@@ -128,15 +132,13 @@ public class IThreadPoolExecutor implements Executor {
                                int maximumPoolSize,
                                long keepAliveTime,
                                TimeUnit unit,
-                               IBlockingQueue<Runnable> workQueue,
-                               ThreadFactory threadFactory,
-                               RejectedExecutionHandler handler) {
+                               IBlockingQueue<Runnable> workQueue) {
         if (corePoolSize < 0 ||
                 maximumPoolSize <= 0 ||
                 maximumPoolSize < corePoolSize ||
                 keepAliveTime < 0)
             throw new IllegalArgumentException();
-        if (workQueue == null || threadFactory == null || handler == null)
+        if (workQueue == null)
             throw new NullPointerException();
         this.corePoolSize = corePoolSize;
         this.maximumPoolSize = maximumPoolSize;
@@ -179,17 +181,25 @@ public class IThreadPoolExecutor implements Executor {
 
     private boolean addWorker(Runnable firstTask, boolean core) {
         int prev = NOT_EXIST;
-        int accept = core ? corePoolSize : maximumPoolSize;
         for (;;) {
             int c = ctl.get();
             int rs = runStateOf(c);
+            /*
             if (rs != prev && (rs >= SHUTDOWN &&!
                     // 运作状态为SHUTDOWN只在以下情况可以添加成功
                     // 任务为null且阻塞队列还有未执行完的任务
                     (rs == SHUTDOWN && firstTask == null && !workQueue.isEmpty()) )) {
                 return false;
             }
+             */
+            if (rs != prev && (rs > SHUTDOWN ||
+                    // 允许shutdown状态下添加在shutdown前提交的任务
+                    (rs == SHUTDOWN && firstTask == null && workQueue.isEmpty()) )) {
+                return false;
+            }
             int wc = workerCountOf(c);
+            // corePoolSize和maximumPoolSize可能改变，要能感知到这种变化
+            int accept = core ? corePoolSize : maximumPoolSize;
             if (wc >= CAPACITY || wc >= accept) {
                 return false;
             }
@@ -253,9 +263,11 @@ public class IThreadPoolExecutor implements Executor {
 
             timeout = allowCoreThreadTimeOut && timeout;
 
-            if (wc > maximumPoolSize || workQueue.isBusy() || timeout) {
-                if (compareAndDecrementWorkerCount(c))
+            if (wc > maximumPoolSize ||
+                    (wc >= corePoolSize && (workQueue.isBusy() || timeout) )) {
+                if (compareAndDecrementWorkerCount(c)) {
                     return null;
+                }
                 continue;
             }
 
@@ -286,8 +298,8 @@ public class IThreadPoolExecutor implements Executor {
                 try {
                     task.run();
                 } finally {
+                    task = null;
                     w.unlock();
-                    w.completedTask++;
                 }
             }
             completedAbruptly = false;
@@ -298,6 +310,7 @@ public class IThreadPoolExecutor implements Executor {
     }
 
     private void processWorkerExit(Worker w, boolean completedAbruptly) {
+        // 正常退出的线程getTask==null且执行了workCount-1
         if (completedAbruptly) {
             decrementWorkerCount();
         }
@@ -330,6 +343,49 @@ public class IThreadPoolExecutor implements Executor {
         }
     }
 
+    public void shutdown() {
+        mainLock.lock();
+        try {
+            advanceRunState(SHUTDOWN);
+            interruptIdleWorkers(false);
+        } finally {
+            mainLock.unlock();
+        }
+        tryTerminate();
+    }
+
+    private void advanceRunState(int targetState) {
+        for (;;) {
+            int c = ctl.get();
+            if (runStateOf(c) >= targetState || ctl.compareAndSet(c, ctlOf(targetState, workerCountOf(c)))) {
+                return;
+            }
+        }
+    }
+
+    // 懒得返回任务列表
+    public void shutdownNow() {
+        List<Runnable> tasks;
+        mainLock.lock();
+        try {
+            advanceRunState(STOP);
+            interruptWorkers();
+        } finally {
+            mainLock.unlock();
+        }
+    }
+
+    private void interruptWorkers() {
+        final ReentrantLock mainLock = this.mainLock;
+        mainLock.lock();
+        try {
+            for (Worker w : workers)
+                w.interruptIfStarted();
+        } finally {
+            mainLock.unlock();
+        }
+    }
+
     final void tryTerminate() {
         for (;;) {
             int c = ctl.get();
@@ -340,6 +396,15 @@ public class IThreadPoolExecutor implements Executor {
                 interruptIdleWorkers(true);
                 return;
             }
+            mainLock.lock();
+            try {
+                // 暂时不扩展terminate，直接terminated
+                ctl.compareAndSet(c, TERMINATED);
+                // 唤醒await的信号量
+                termination.signalAll();
+            } finally {
+                mainLock.unlock();
+            }
         }
     }
 
@@ -349,7 +414,11 @@ public class IThreadPoolExecutor implements Executor {
             for (Worker worker : workers) {
                 Thread t = worker.thread;
                 if (!t.isInterrupted() && worker.tryLock()) {
-                    t.interrupt();
+                    try {
+                        t.interrupt();
+                    } finally {
+                        worker.unlock();
+                    }
                 }
                 // 关于onlyOne
                 // 1.interrupt:使在getTask这一步骤阻塞的僵尸线程被唤醒，线程被唤醒后会转而尝试唤醒其他的一个阻塞线程并结束本线程
